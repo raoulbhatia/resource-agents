@@ -42,6 +42,7 @@
 #   OCF_RESKEY_replication_user
 #   OCF_RESKEY_replication_passwd
 #   OCF_RESKEY_replication_port
+#   OCF_RESKEY_replication_hostname_suffix
 #   OCF_RESKEY_max_slave_lag
 #   OCF_RESKEY_evict_outdated_slaves
 #   OCF_RESKEY_reader_attribute
@@ -52,6 +53,100 @@
 : ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
 . ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
 . ${OCF_FUNCTIONS_DIR}/mysql-common.sh
+
+#######################################################################
+
+# Attempt to detect a default binary
+OCF_RESKEY_binary_default=$(which mysqld_safe 2> /dev/null)
+if [ "$OCF_RESKEY_binary_default" = "" ]; then
+	OCF_RESKEY_binary_default=$(which safe_mysqld 2> /dev/null)
+fi
+
+# Fill in some defaults if no values are specified
+HOSTOS=`uname`
+if [ "X${HOSTOS}" = "XOpenBSD" ];then
+	if [ "$OCF_RESKEY_binary_default" = "" ]; then
+		OCF_RESKEY_binary_default="/usr/local/bin/mysqld_safe"
+	fi
+	OCF_RESKEY_config_default="/etc/my.cnf"
+	OCF_RESKEY_datadir_default="/var/mysql"
+	OCF_RESKEY_user_default="_mysql"
+	OCF_RESKEY_group_default="_mysql"
+	OCF_RESKEY_log_default="/var/log/mysqld.log"
+	OCF_RESKEY_pid_default="/var/mysql/mysqld.pid"
+	OCF_RESKEY_socket_default="/var/run/mysql/mysql.sock"
+else
+	if [ "$OCF_RESKEY_binary_default" = "" ]; then
+		OCF_RESKEY_binary_default="/usr/bin/safe_mysqld"
+	fi
+	OCF_RESKEY_config_default="/etc/my.cnf"
+	OCF_RESKEY_datadir_default="/var/lib/mysql"
+	OCF_RESKEY_user_default="mysql"
+	OCF_RESKEY_group_default="mysql"
+	OCF_RESKEY_log_default="/var/log/mysqld.log"
+	OCF_RESKEY_pid_default="/var/run/mysql/mysqld.pid"
+	OCF_RESKEY_socket_default="/var/lib/mysql/mysql.sock"
+fi
+OCF_RESKEY_client_binary_default="mysql"
+OCF_RESKEY_test_user_default="root"
+OCF_RESKEY_test_table_default="mysql.user"
+OCF_RESKEY_test_passwd_default=""
+OCF_RESKEY_enable_creation_default=0
+OCF_RESKEY_additional_parameters_default=""
+OCF_RESKEY_replication_port_default="3306"
+OCF_RESKEY_replication_hostname_suffix_default=""
+OCF_RESKEY_max_slave_lag_default="3600"
+OCF_RESKEY_evict_outdated_slaves_default="false"
+OCF_RESKEY_reader_attribute_default="readable"
+
+: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
+MYSQL_BINDIR=`dirname ${OCF_RESKEY_binary}`
+
+: ${OCF_RESKEY_client_binary=${OCF_RESKEY_client_binary_default}}
+
+: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+: ${OCF_RESKEY_datadir=${OCF_RESKEY_datadir_default}}
+
+: ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
+: ${OCF_RESKEY_group=${OCF_RESKEY_group_default}}
+
+: ${OCF_RESKEY_log=${OCF_RESKEY_log_default}}
+: ${OCF_RESKEY_pid=${OCF_RESKEY_pid_default}}
+: ${OCF_RESKEY_socket=${OCF_RESKEY_socket_default}}
+
+: ${OCF_RESKEY_test_user=${OCF_RESKEY_test_user_default}}
+: ${OCF_RESKEY_test_table=${OCF_RESKEY_test_table_default}}
+: ${OCF_RESKEY_test_passwd=${OCF_RESKEY_test_passwd_default}}
+
+: ${OCF_RESKEY_enable_creation=${OCF_RESKEY_enable_creation_default}}
+: ${OCF_RESKEY_additional_parameters=${OCF_RESKEY_additional_parameters_default}}
+
+: ${OCF_RESKEY_replication_user=${OCF_RESKEY_replication_user_default}}
+: ${OCF_RESKEY_replication_passwd=${OCF_RESKEY_replication_passwd_default}}
+: ${OCF_RESKEY_replication_port=${OCF_RESKEY_replication_port_default}}
+: ${OCF_RESKEY_replication_hostname_suffix=${OCF_RESKEY_replication_hostname_suffix_default}}
+
+: ${OCF_RESKEY_max_slave_lag=${OCF_RESKEY_max_slave_lag_default}}
+: ${OCF_RESKEY_evict_outdated_slaves=${OCF_RESKEY_evict_outdated_slaves_default}}
+
+: ${OCF_RESKEY_reader_attribute=${OCF_RESKEY_reader_attribute_default}}
+
+#######################################################################
+# Convenience variables
+
+MYSQL=$OCF_RESKEY_client_binary
+MYSQL_OPTIONS_LOCAL="-S $OCF_RESKEY_socket --connect_timeout=10"
+MYSQL_OPTIONS_REPL="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_replication_user --password=$OCF_RESKEY_replication_passwd"
+MYSQL_OPTIONS_TEST="$MYSQL_OPTIONS_LOCAL --user=$OCF_RESKEY_test_user --password=$OCF_RESKEY_test_passwd"
+MYSQL_TOO_MANY_CONN_ERR=1040
+
+CRM_MASTER="${HA_SBIN_DIR}/crm_master -l reboot "
+NODENAME=$(ocf_local_nodename)
+CRM_ATTR="${HA_SBIN_DIR}/crm_attribute -N $NODENAME "
+INSTANCE_ATTR_NAME=`echo ${OCF_RESOURCE_INSTANCE}| awk -F : '{print $1}'`
+CRM_ATTR_REPL_INFO="${HA_SBIN_DIR}/crm_attribute --type crm_config --name ${INSTANCE_ATTR_NAME}_REPL_INFO -s mysql_replication"
+
+>>>>>>> Medium: mysql: add replication_hostname_suffix parameter
 #######################################################################
 
 usage() {
@@ -237,6 +332,32 @@ The port on which the Master MySQL instance is listening.
 </longdesc>
 <shortdesc lang="en">MySQL replication port</shortdesc>
 <content type="string" default="${OCF_RESKEY_replication_port_default}" />
+</parameter>
+
+<parameter name="replication_hostname_suffix" unique="0" required="0">
+<longdesc lang="en">
+A hostname suffix that will be added when setting the MySQL replication
+master. This enables the use of a seperate replication subnet/link.
+
+For example, suppose the following configuration:
+
+# uname -n
+node01
+
+# cat /etc/hosts
+192.168.100.101 node01
+192.168.100.102 node02
+
+192.168.200.101 node01-mysqlrep
+192.168.200.102 node02-mysqlrep
+
+Normally, the replication will be done via the subnet 192.168.100.x.
+
+Setting "replication_hostname_suffix=-mysqlrep" will move all
+replication related traffic to the subnet 192.168.200.x.
+</longdesc>
+<shortdesc lang="en">MySQL replication master hostname suffix</shortdesc>
+<content type="string" default="${OCF_RESKEY_replication_hostname_suffix_default}" />
 </parameter>
 
 <parameter name="max_slave_lag" unique="0" required="0">
@@ -546,8 +667,9 @@ set_master() {
     # from the laste master the slave replicated from, or freshly
     # reset with RESET MASTER.
 
+    master_host="${new_master_host}${OCF_RESKEY_replication_hostname_suffix}"
     ocf_run $MYSQL $MYSQL_OPTIONS_REPL \
-        -e "CHANGE MASTER TO MASTER_HOST='$new_master', \
+        -e "CHANGE MASTER TO MASTER_HOST='$master_host', \
         MASTER_USER='$OCF_RESKEY_replication_user', \
         MASTER_PASSWORD='$OCF_RESKEY_replication_passwd' $master_params"
     rm -f $tmpfile
